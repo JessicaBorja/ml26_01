@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ml26"
+version = "0.1.0"
+description = "Machine Learning Course 2026 - Exercises and Projects"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Jessica Borja", email = "jessica.borja@cetys.mx" }]
+dependencies = [
+    "datasets",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scikit-learn",
+    "opencv-python",
+    "imbalanced-learn",
+    "ipykernel",
+    "ipympl",
+    "notebook",
+    "scipy",
+    "gymnasium>=0.26.3",
+    "gymnasium[classic_control]",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4.0", "black>=23.7.0", "ruff>=0.0.285"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ml26"]
