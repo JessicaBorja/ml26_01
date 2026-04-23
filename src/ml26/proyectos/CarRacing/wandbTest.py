@@ -1,7 +1,7 @@
 import wandb
 
 # Inicializa un experimento
-wandb.init(project="mi_primer_proyecto")
+wandb.init(project="Prueba conexión wandb")
 
 # Loggea datos (puede ser lo que sea)
 for i in range(10):
