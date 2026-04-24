@@ -242,3 +242,4 @@ uv.lock
 *.csv
 *.json
 data/
+wandb/
