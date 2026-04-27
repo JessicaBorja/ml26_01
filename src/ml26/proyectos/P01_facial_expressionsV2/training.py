@@ -9,8 +9,8 @@ import torch.optim as optim
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from ml26.proyectos.P01_facial_expressions.dataset import get_loader
-from ml26.proyectos.P01_facial_expressions.network import Network
+from ml26.proyectos.P01_facial_expressionsV2.dataset import get_loader
+from ml26.proyectos.P01_facial_expressionsV2.network import Network
 
 # Logging
 import wandb
@@ -66,9 +66,9 @@ def train():
     # Hyperparametros
     cfg = {
         "training": {
-            "learning_rate": 1e-4,
-            "n_epochs": 100,
-            "batch_size": 256,
+            "learning_rate": 3e-4, #cambio (le subimos el laerning rate para que aprende mas rapido)
+            "n_epochs": 100, #cambio
+            "batch_size": 128, #
         },
     }
     run = init_wandb(cfg)
@@ -94,9 +94,11 @@ def train():
     criterion = nn.CrossEntropyLoss()
 
     # Define el optimizador
-    optimizer = torch.optim.Adam(modelo.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(modelo.parameters(), lr=learning_rate, weight_decay=1e-4) #agregue y inicialice el weightdecay
 
     best_epoch_loss = np.inf
+    patience = 15 #agregue la paciencia
+    epochs_without_improvement = 0 #agregue 
     for epoch in range(n_epochs):
         train_loss = 0
         for i, batch in enumerate(tqdm(train_loader, desc=f"Epoch: {epoch}")):
@@ -124,7 +126,13 @@ def train():
         # TODO guarda el modelo si el costo de validación es menor al mejor costo de validación
         if val_loss < best_epoch_loss:
             best_epoch_loss = val_loss
+            epochs_without_improvement = 0
             modelo.save_model("modelo_1.pt")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                print(f"Early stopping en epoch {epoch}")
+                break
 
         run.log(
             {
