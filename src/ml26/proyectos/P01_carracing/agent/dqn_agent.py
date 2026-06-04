@@ -39,6 +39,10 @@ class DQNAgent:
            epsilon: Chance to sample a random action. Float betwen 0 and 1.
            lr: learning rate of the optimizer
         """
+        self.epsilon_start = model_cfg.get("epsilon_start")
+        self.epsilon_min = model_cfg.get("epsilon_min")
+        self.epsilon_decay = model_cfg.get("epsilon_decay")
+        self.steps_done = 0
         self.model_cfg = model_cfg
         self.img_cfg = img_cfg
         # setup networks
@@ -69,7 +73,7 @@ class DQNAgent:
         """
         # TODO:
         # 1. add current transition to replay buffer
-        ...
+        self.replay_buffer.add_transition(state, action, next_state, reward, terminal)
 
         # TODO: 2. sample next BATCH and perform batch update:
         (
@@ -78,13 +82,13 @@ class DQNAgent:
             batch_next_states,
             batch_rewards,
             batch_terminal_flags,
-        ) = ...
+        ) = self.replay_buffer.next_batch(self.batch_size)
 
         # TODO: use tt() function to transform arrays to tensors
         (
             batch_states,
             batch_actions,
-            batch_next_states,
+            batch_next_states,#64x4x96x96
             batch_rewards,
             batch_terminal_flags,
         ) = (
@@ -98,13 +102,22 @@ class DQNAgent:
         # TODO: 2.1 compute td targets and loss
         #  td_target =  reward + discount * max_a Q_target(next_state_batch, a)
 
-        td_target = ...
-        current_prediction = ...
-        loss = ...
+        # Sacamos Qvalues del batch aleatorio seleccionado del ReplayBuffer
+        with torch.no_grad():
+            next_q_values = self.Q_target(batch_next_states)#64*5
+            max_next_q_values = next_q_values.max(dim=1)[0]#64,
+            td_target = batch_rewards + self.gamma * max_next_q_values * (1 - batch_terminal_flags)
+            td_target = td_target.unsqueeze(1)#64x1
+
+        q_values = self.Q(batch_states)#64*5
+        batch_actions = batch_actions.long().unsqueeze(1)#64x1
+        current_prediction = q_values.gather(1, batch_actions)#64x1
+        loss = self.loss_function(current_prediction, td_target)
 
         #  TODO: 2.2 update the Q network
         self.optimizer.zero_grad()
-        ...
+        loss.backward()
+        self.optimizer.step()
 
         # Call soft update for updating target network
         self.soft_update()
@@ -118,22 +131,44 @@ class DQNAgent:
         Returns:
             action id
         """
+
+        # Epsilon decay policy
+        epsilon = self.epsilon_min + (
+        self.epsilon_start - self.epsilon_min
+        ) * np.exp(-self.steps_done / self.epsilon_decay)
+        
+        if not deterministic:
+            self.steps_done += 1
+
+
         r = np.random.uniform()
-        if deterministic or r > self.epsilon:
+
+        if deterministic or r > epsilon:
             # TODO: take greedy action (argmax)
             # Consider that the state needs to be converted to a torch tensor
             # return the action id as an integer
-            action_id = ...
+            state_t = torch.from_numpy(state).float().to(self.device)
+            with torch.no_grad():
+                q_values = self.Q(state_t)#corre el forward de la red
+            action_id = torch.argmax(q_values, dim=1).item()
         else:
-
             # TODO: sample random action
             # Hint for the exploration in CarRacing: sampling the action from a uniform distribution will probably not work.
             # You can sample the agents actions with different probabilities (need to sum up to 1) so that
             # the agent will prefer to accelerate or going straight.
             # To see how the agent explores, turn the rendering in the training on and look what the agent is doing.
-            action_id = ...
+            action_id = np.random.choice(
+                self.num_actions,
+                p=[0.25, 0.15, 0.15, 0.40, 0.05]
+            )
 
         return action_id
+
+    def get_epsilon(self):
+        return self.epsilon_min + (
+            self.epsilon_start - self.epsilon_min
+        ) * np.exp(-self.steps_done / self.epsilon_decay)
+
 
     def save(self, file_name):
         torch.save(self.Q.state_dict(), file_name + ".pt")

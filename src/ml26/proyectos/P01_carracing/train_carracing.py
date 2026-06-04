@@ -28,6 +28,7 @@ def run_eval(
     eval_every_n_ep = eval_cfg.get("every_n_ep")
 
     mean_reward = 0
+    mean_steps = 0
     if curr_episode % eval_every_n_ep == 0:
         for j in range(num_eval_episodes):
             stats = run_episode(
@@ -40,28 +41,38 @@ def run_eval(
                 do_training=False,
             )
             mean_reward += stats.episode_reward
+            mean_steps += stats.total_steps
         mean_reward /= num_eval_episodes
-        run.log({"val/mean_return": mean_reward, "episode": curr_episode})
+        mean_steps /= num_eval_episodes
+        epsilon = agent.get_epsilon()
+        run.log(
+            {
+                "epsilon, eval": epsilon,
+                "reward, eval": mean_reward,
+                "epsilon/reward, eval": mean_reward,
+            }
+        )
         print(
-            f"[EVAL] Episode {curr_episode}: Mean Reward: {mean_reward} over {num_eval_episodes} episodes"
+            f"[EVAL] Episode {curr_episode}: Mean Reward: {mean_reward} over {num_eval_episodes} episodes | epsilon: {agent.get_epsilon():.4f}"
         )
 
-    # Save model every eval_every_n_ep episodes
-    eval_cond = curr_episode % eval_every_n_ep == 0 or (
-        curr_episode >= max_episodes - 1
-    )
-    best_reward_cond = mean_reward > best_return
-    if eval_cond:
-        model_name = (
-            "dqn_agent_best_eval" if best_reward_cond else "dqn_agent_{curr_episode}"
-        )
-        agent.save(os.path.join(MODELS_DIR, model_name))
+    # Save evaluated models every eval_every_n_ep episodes.
+    if curr_episode % eval_every_n_ep == 0:
+        best_reward_cond = mean_reward > best_return
+        if best_reward_cond:
+            best_return = mean_reward
+            agent.save(os.path.join(MODELS_DIR, "dqn_agent_best_eval"))
+
+    if curr_episode >= max_episodes - 1:
+        agent.save(os.path.join(MODELS_DIR, "dqn_agent_final"))
+
+    return best_return
 
 
 def run_episode(
     env,
     agent,
-    deterministic,
+    deterministic=False,
     img_cgf={},
     do_training=True,
     rendering=False,
@@ -76,19 +87,19 @@ def run_episode(
     stats = EpisodeStats()
 
     step = 0
-    state = env.reset()[0]
+    state = env.reset()[0] # Estado que va ser preprocesado
 
     # Append image history to first state
-    image_hist = []
-    history_length = img_cgf.get("history_length", 0)
+    image_hist = [] #Historial de imagenes a recibir en el estado
+    history_length = img_cgf.get("history_length", 0) 
     skip_frames = img_cgf.get("skip_frames", 0)
-    state = state_preprocessing(state)
+    state = state_preprocessing(state)# se pasa a escala de grises
     image_hist.extend([state] * (history_length + 1))
     state = np.array(image_hist).reshape(96, 96, history_length + 1)
 
     # we use while true since the agent can finish before max_timesteps (terminal or max timesteps)
     while True:
-        state_cnn = np.expand_dims(np.transpose(state, (2, 0, 1)), 0)
+        state_cnn = np.expand_dims(np.transpose(state, (2, 0, 1)), 0)#1,4,96,96
         # TODO: get action_id from agent
         # Hint: adapt the probabilities of the 5 actions for random sampling so that the agent explores properly.
         # change state to match torch cnn dimensions (batch, channels,w,h)
@@ -96,9 +107,11 @@ def run_episode(
 
         # Hint: frame skipping might help you to get better results.
         reward = 0
+        env_steps = 0
         for _ in range(skip_frames + 1):
             next_state, r, terminal, truncated, info = env.step(action)
             reward += r
+            env_steps += 1
             if rendering:
                 env.render()
 
@@ -118,7 +131,7 @@ def run_episode(
                 state_switch_channels, action, next_switch_channels, reward, terminal
             )
 
-        stats.step(reward, action)
+        stats.step(reward, action, n_steps=env_steps)
 
         state = next_state
 
@@ -134,12 +147,18 @@ def train_online(run, env, agent, num_episodes, img_cfg={}, eval_cfg={}):
 
     best_return = -float("inf")
     max_timesteps = 200
-    for ep in tqdm(range(num_episodes)):
-        # After 300 episodes, allow longer episodes
-        if ep > 300:
-            max_timesteps = 1000
 
+    for ep in tqdm(range(num_episodes)):
         # Hint: you can keep the episodes short in the beginning by changing max_timesteps (otherwise the car will spend most of the time out of the track)
+        if ep < 50:
+            max_timesteps = 200
+        elif ep < 150:
+            max_timesteps = 400
+        elif ep < 300:
+            max_timesteps = 700
+        else:
+            max_timesteps = 1000
+            
         stats = run_episode(
             env,
             agent,
@@ -149,36 +168,37 @@ def train_online(run, env, agent, num_episodes, img_cfg={}, eval_cfg={}):
             max_timesteps=max_timesteps,
         )
 
+        epsilon = agent.get_epsilon()
         run.log(
             {
                 "episode": ep,
-                "train/ep_return": stats.episode_reward,
-                "train/straight": stats.get_action_usage("STRAIGHT"),
-                "train/left": stats.get_action_usage("LEFT"),
-                "train/right": stats.get_action_usage("RIGHT"),
-                "train/accel": stats.get_action_usage("ACCELERATE"),
-                "train/brake": stats.get_action_usage("BRAKE"),
+                "epsilon, train": epsilon,
+                "reward, train": stats.episode_reward,
+                "epsilon/reward, train": stats.episode_reward,
+                "straight_usage, train": stats.get_action_usage("STRAIGHT"),
+                "left_usage, train": stats.get_action_usage("LEFT"),
+                "right_usage, train": stats.get_action_usage("RIGHT"),
+                "accel_usage, train": stats.get_action_usage("ACCELERATE"),
+                "brake_usage, train": stats.get_action_usage("BRAKE"),
             }
         )
 
         # ----- Evaluation ------ #
-        run_eval(run, env, agent, eval_cfg, img_cfg, ep, num_episodes, best_return)
+        best_return = run_eval(
+            run, env, agent, eval_cfg, img_cfg, ep, num_episodes, best_return
+        )
+
         # visualize learning every 100 episodes
-        if ep % 100 == 0:
-            if max_timesteps < 1000:
-                max_timesteps += 150
-            else:
-                max_timesteps = 1000
             # Run one episode with rendering
-            run_episode(
-                env,
-                agent,
-                deterministic=True,
-                img_cgf=img_cfg,
-                do_training=False,
-                rendering=True,
-                max_timesteps=300,
-            )
+        run_episode(
+            env,
+            agent,
+            deterministic=True,
+            img_cgf=img_cfg,
+            do_training=False,
+            rendering=True,
+            max_timesteps=1000,
+        )
 
 
 def state_preprocessing(state):
@@ -195,6 +215,10 @@ def init_wandb(cfg):
         config=cfg,
         name=f"DQN-CarRacing_{timestamp}_utc",
     )
+    wandb.define_metric("reward, train", step_metric="episode")
+    wandb.define_metric("reward, eval", step_metric="episode")
+    wandb.define_metric("epsilon/reward, train", step_metric="epsilon, train")
+    wandb.define_metric("epsilon/reward, eval", step_metric="epsilon, eval")
     return run
 
 
@@ -202,21 +226,24 @@ if __name__ == "__main__":
     # https://gymnasium.farama.org/environments/box2d/car_racing/
     # pip install Box2D gymnasium
     env = gym.make(
-        "CarRacing-v3", continuous=False, render_mode="human"
+        "CarRacing-v3", continuous=False,render_mode="human"
     )  # We load the environment as discrete to have a discrete action space, state space is the image
     # Hyperparams
     cfg = {
         "evaluation": {
-            "n_episodes": 5,
-            "every_n_ep": 20,  # run evaluation every n episodes
+            "n_episodes": 10,
+            "every_n_ep": 50,  # run evaluation every n episodes
         },
-        "training": {"n_episodes": 1000},
+        "training": {"n_episodes": 500},
         "model": {
             "batch_size": 64,
             "gamma": 0.99,
             "epsilon": 0.1,
             "tau": 0.01,
-            "lr": 1e-4,
+            "lr": 3e-4,
+            "epsilon_start":.25,
+            "epsilon_min": 0.05,
+            "epsilon_decay": 50000,
         },
         "image_preprocessing": {
             "history_length": 3,

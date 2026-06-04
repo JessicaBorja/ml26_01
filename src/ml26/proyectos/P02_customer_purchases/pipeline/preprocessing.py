@@ -12,12 +12,11 @@ features derivadas en preprocess().
 
 import os
 from pathlib import Path
-
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ml26.proyectos.P02_customer_purchases.pipeline.io import (
@@ -51,7 +50,19 @@ def build_processor(
     savepath = Path(os.path.abspath(DATA_DIR)) / "preprocessor.pkl"
 
     if training:
-        text_transformers = [(col, CountVectorizer(), col) for col in count_features]
+        text_transformers = [
+            (
+                col,
+                TfidfVectorizer(
+                    lowercase=True,
+                    ngram_range=(1, 3),
+                    min_df=2,
+                    max_features=1000,
+                ),
+                col,
+            )
+            for col in count_features
+        ]
         preprocessor = ColumnTransformer(
             transformers=[
                 ("num", StandardScaler(), numeric_features),
@@ -78,7 +89,7 @@ def build_processor(
         )
     )
     bow_cols = []
-    for col in text_features:
+    for col in count_features:
         vocab = preprocessor.named_transformers_[col].get_feature_names_out()
         bow_cols.extend([f"{col}_bow_{t}" for t in vocab])
 
@@ -112,11 +123,27 @@ def preprocess(df: pd.DataFrame, training: bool = False) -> pd.DataFrame:
         "purchase_id",
         "item_release_date",  # conviértela a feature numérica si la necesitas
         "item_img_filename",  # reemplázala por features extraídas de la imagen
+        "item_avg_rating",
+        "purchase_timestamp",
+        "customer_item_views",
+        "purchase_item_rating",
+        "purchase_device",
+        "item_num_ratings"
     ]
 
     # ── Features derivadas ─────────────────────────────────────────────────
-    df["item_release_date"] = pd.to_datetime(df["item_release_date"], format="mixed")
-
+    if training:
+        df["item_release_date"] = pd.to_datetime(
+            df["item_release_date"],
+            errors="coerce",
+            dayfirst=True,
+        )
+    else:
+        df["item_release_date"] = pd.to_datetime(
+            df["item_release_date"],
+            errors="coerce",
+            dayfirst=False,
+        )
     # item_days_since_release_cutoff: NO borrar — lo usa split_by_days en training.py
     # para separar train/val sin data leakage. Pasa sin escalar via passthrough.
     df["item_days_since_release_cutoff"] = (
@@ -125,45 +152,89 @@ def preprocess(df: pd.DataFrame, training: bool = False) -> pd.DataFrame:
 
     # ── TODO: crea aquí tus features derivadas ─────────────────────────────
     # Ejemplos:
-    #
-    # Días desde lanzamiento (para el modelo, no el split):
-    #   df["item_days_since_release"] = df["item_days_since_release_cutoff"]
-    #
-    # Meses desde lanzamiento:
-    #   df["item_months_since_release"] = df["item_days_since_release"] // 30
-    #
-    # Mes de lanzamiento codificado cíclicamente:
-    #   df["item_release_month"] = df["item_release_date"].dt.month
-    #   df["item_release_month_sin"] = np.sin(2 * np.pi * df["item_release_month"] / 12)
-    #   df["item_release_month_cos"] = np.cos(2 * np.pi * df["item_release_month"] / 12)
-    #
-    # Match entre categoría del ítem y top categorías del cliente:
-    #   for i in range(1, 4):
-    #       df[f"customer_top_{i}_match"] = (
-    #           df[f"customer_top_{i}_cat"] == df["item_category"]
-    #       ).astype(int)
+    
+    category_pct_cols = {
+        "t-shirt": "customer_pct_t_shirt",
+        "blouse": "customer_pct_blouse",
+        "dress": "customer_pct_dress",
+        "shoes": "customer_pct_shoes",
+        "skirt": "customer_pct_skirt",
+        "jeans": "customer_pct_jeans",
+        "shirt": "customer_pct_shirt",
+        "suit": "customer_pct_suit",
+        "slacks": "customer_pct_slacks",
+        "jacket": "customer_pct_jacket",
+    }
+
+    df["customer_item_category_pct"] = 0.0
+
+    for category, pct_col in category_pct_cols.items():
+        mask = df["item_category"] == category
+        df.loc[mask, "customer_item_category_pct"] = df.loc[mask, pct_col].fillna(0)
+
+    df["customer_preferred_category_match"] = (df["customer_item_category_pct"] > 0.40).astype(int)
+
+    df["customer_recency_score"] = (
+        1 - (df["customer_days_since_last_purchase"].fillna(90) / 90)
+    ).clip(lower=0, upper=1)
+
+    price_ratio = (
+        df["item_price"] / df["customer_avg_price"].replace(0, np.nan)
+    ).replace([np.inf, -np.inf], np.nan).fillna(1)
+
+    df["item_price_similarity_customer_avg"] = 1 / (
+        1 + (price_ratio - 1).abs()
+    )
+
+    df["item_price_in_customer_range"] = (
+        (df["item_price"] >= df["customer_min_price"])
+        & (df["item_price"] <= df["customer_max_price"])
+    ).astype(int)
+
+    df["customer_purchase_frequency_90d_score"] = (
+        1 - (df["customer_purchase_frequency_90d"].fillna(90) / 90)
+    ).clip(lower=0, upper=1)
+
+    df["item_title"] = df["item_title"].fillna("")
 
     # ── Definicion de grupos de features ───────────────────────────────────
     # Agrega aquí las columnas que quieras escalar con StandardScaler
     numeric_features = [
         "customer_age_years",  # ejemplo: edad del cliente
-        # "customer_tenure_months",
-        # "item_days_since_release",
+        "customer_avg_price",
+        "customer_item_category_pct",
+        "customer_purchase_count",
+        "customer_purchase_count_30d",
+        "customer_purchase_count_30_90d",
+        "customer_purchase_count_90_180d",
+        "customer_tenure_months",
+        "item_price",
+        "img_mean_r",
+        "img_mean_g",
+        "img_mean_b",
     ]
 
     # Agrega aquí columnas categóricas para OneHotEncoder
     categorical_features = [
-        # "customer_prefered_device",
+        "customer_gender",
+        "item_category",
     ]
 
     # Agrega aquí columnas para CountVectorizer
     count_features = [
-        # "item_title",
+        "item_title",
     ]
 
     # Columnas que pasan sin transformar — item_days_since_release_cutoff es
     # necesario para split_by_days; se dropea antes de model.fit() en training.py.
-    passthrough_features = ["item_days_since_release_cutoff"]
+    passthrough_features = [
+        "item_days_since_release_cutoff",
+        "customer_preferred_category_match",
+        "customer_recency_score",
+        "item_price_similarity_customer_avg",
+        "item_price_in_customer_range",
+        "customer_purchase_frequency_90d_score",
+    ]
 
     # Tirar columnas de id: NO SIRVEN
     id_cols = ["customer_id", "item_id", "label"]

@@ -153,37 +153,59 @@ def gen_popularity_weighted(df: pd.DataFrame, n_per_positive: int = 1) -> pd.Dat
     return pd.DataFrame(rows)
 
 
-def gen_smart_negatives(df: pd.DataFrame, n_per_positive: int = 1) -> pd.DataFrame:
+def gen_smart_negatives(df: pd.DataFrame, n_per_positive: int = 1,popularity_ratio: float = 0.80) -> pd.DataFrame:
     """Placeholder para tu propia estrategia de negativos.
-
     Aquí puedes implementar cualquier lógica que considere el comportamiento
     del cliente para seleccionar negativos más informativos. Algunas ideas:
-
     - Mismatch de categoría: para cada cliente, calcular sus top-k categorías
       más compradas y seleccionar ítems de las categorías restantes.
       (Requiere la columna item_category en df.)
-
     - Mismatch de precio: calcular el precio mediano histórico del cliente y
       seleccionar ítems cuyo precio esté fuera de un rango [median*(1-p),
       median*(1+p)]. (Requiere item_price en df.)
-
     - Negativos recientes: priorizar ítems lanzados después de la última compra
       del cliente, que son los más relevantes para el problema cold-start.
       (Requiere item_release_date y purchase_timestamp en df.)
-
-    - Mix de estrategias: llamar a varias de las funciones anteriores y
+     - Mix de estrategias: llamar a varias de las funciones anteriores y
       concatenar sus resultados con distintas proporciones.
-
     Parameters
     ----------
     df              : DataFrame de compras positivas con todas las columnas del CSV.
     n_per_positive  : cuántos negativos generar por cliente.
-
     Returns
     -------
     pd.DataFrame con columnas customer_id, item_id, label (= 0).
     """
-    raise NotImplementedError("Implementa tu propia estrategia aquí.")
+    weighted_negatives = gen_popularity_weighted(
+        df,
+        n_per_positive=n_per_positive,
+    )
+
+    random_negatives = gen_random_negatives(
+        df,
+        n_per_positive=n_per_positive,
+    )
+
+    n_total = len(weighted_negatives)
+    n_weighted = int(round(n_total * popularity_ratio))
+    n_random = n_total - n_weighted
+
+    weighted_sample = weighted_negatives.sample(
+        n=n_weighted,
+        random_state=42,
+    )
+
+    random_sample = random_negatives.sample(
+        n=min(n_random, len(random_negatives)),
+        random_state=42,
+    )
+
+    negatives = pd.concat(
+        [weighted_sample, random_sample],
+        ignore_index=True,
+    )
+
+    return negatives[["customer_id", "item_id", "label"]]
 
 
 def gen_final_dataset(train_df: pd.DataFrame, negatives: pd.DataFrame) -> pd.DataFrame:
