@@ -42,6 +42,8 @@ def validation_step(val_loader, net, cost_function):
     - val_loss (float): el costo total (promedio por minibatch) de todos los datos de validación
     """
     val_loss = 0.0
+    correct = 0
+    total = 0 
     for i, batch in enumerate(val_loader, 0):
         batch_imgs = batch["transformed"]
         batch_labels = batch["label"]
@@ -49,9 +51,15 @@ def validation_step(val_loader, net, cost_function):
         batch_labels = batch_labels.to(device)
         with torch.inference_mode():
             # TODO: realiza un forward pass, calcula el loss y acumula el costo
-            ...
+            logits, proba = net(batch_imgs.to(net.device))
+            loss = cost_function(logits, batch_labels.long())
+            val_loss += loss.item()
+            predicted = torch.argmax(proba, dim=1)
+            correct += (predicted == batch_labels).sum().item()
+            total += batch_labels.size(0)
     # TODO: Regresa el costo promedio por minibatch
-    return ...
+    accuracy = correct / total * 100
+    return val_loss / len(val_loader), accuracy 
 
 
 def train():
@@ -83,10 +91,10 @@ def train():
     modelo = Network(input_dim=48, n_classes=7)
 
     # TODO: Define la funcion de costo
-    criterion = ...
+    criterion = nn.CrossEntropyLoss()
 
     # Define el optimizador
-    optimizer = ...
+    optimizer = torch.optim.Adam(modelo.parameters(), lr=learning_rate)
 
     best_epoch_loss = np.inf
     for epoch in range(n_epochs):
@@ -94,26 +102,37 @@ def train():
         for i, batch in enumerate(tqdm(train_loader, desc=f"Epoch: {epoch}")):
             batch_imgs = batch["transformed"]
             batch_labels = batch["label"]
+            batch_labels = batch_labels.to(modelo.device)
             # TODO Zero grad, forward pass, backward pass, optimizer step
-            ...
+            optimizer.zero_grad()
+            logits, proba = modelo(batch_imgs.to(modelo.device))
+            loss = criterion(logits, batch_labels.long())
+            loss.backward()
+            optimizer.step()
+
 
             # TODO acumula el costo
-            ...
+            train_loss += loss.item()
 
         # TODO Calcula el costo promedio
-        train_loss = ...
-        val_loss = validation_step(val_loader, modelo, criterion)
+        train_loss = train_loss / len(train_loader)
+        val_loss, val_accuracy = validation_step(val_loader, modelo, criterion)
         tqdm.write(
-            f"Epoch: {epoch}, train_loss: {train_loss:.2f}, val_loss: {val_loss:.2f}"
+            f"Epoch: {epoch}, train_loss: {train_loss:.2f}, val_loss: {val_loss:.2f}, val_accuracy: {val_accuracy:.2f}%"
         )
 
         # TODO guarda el modelo si el costo de validación es menor al mejor costo de validación
-        ...
+        if val_loss < best_epoch_loss:
+            best_epoch_loss = val_loss
+            modelo.save_model("modelo_1.pt")
+
         run.log(
             {
                 "epoch": epoch,
                 "train/loss": train_loss,
                 "val/loss": val_loss,
+                "val/accuracy": val_accuracy,
+
             }
         )
 
